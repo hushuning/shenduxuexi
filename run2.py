@@ -184,6 +184,22 @@ def build_label_points(df: pd.DataFrame, seq_len=30, forward=5, threshold=0.02):
             points.append((idx, price, label))
     return points
 
+def detect_non_overlapping_boxes(df: pd.DataFrame, boxes: List[Dict]):
+    """查找所有没有重合的最近的两个箱体"""
+    non_overlapping_boxes = []
+    for i in range(len(boxes) - 1):
+        box1 = boxes[i]
+        box2 = boxes[i + 1]
+
+        # 检查两个箱体是否有重叠
+        if  box2['lo'] > box1['hi'] or box2['hi'] < box1['lo']:
+            # 两个箱体没有重叠，标记为红色
+            print(f"找到了没有重叠的箱子")
+            non_overlapping_boxes.append((box1, box2))
+        else:
+            print("没有找到没有重叠的箱体")
+    return non_overlapping_boxes
+
 
 def echarts_boxes(df: pd.DataFrame, boxes: List[Dict], pivots, labels_pts=None, filename='data/kline_boxes_echarts.html'):
     """单一 ECharts 图层：箱体 + 缠论笔折线 + 买/卖箭头"""
@@ -200,18 +216,29 @@ def echarts_boxes(df: pd.DataFrame, boxes: List[Dict], pivots, labels_pts=None, 
                   {'xAxis': ts2idx[b['end']],   'yAxis': b['hi']}]
                  for b in boxes if b['start'] in ts2idx and b['end'] in ts2idx]
 
-    # ---- 3. 笔折线 (追加为第二个 series) ----
-    line_series = {
-        'type': 'line',
-        'name': 'Bi',
-        'data': [[idx, price] for idx, price in pivots],
-        'symbol': 'none',
-        'lineStyle': {'color': '#ab47bc', 'width': 2},
-        'encode': {'x': 0, 'y': 1},
-        'tooltip': {'show': False},
-    }
+    # ---- 3. 找到没有重叠的箱体并标记为红色 ----
+    non_overlapping_boxes = detect_non_overlapping_boxes(df, boxes)
+    non_overlapping_markareas = []
+    for box1, box2 in non_overlapping_boxes:
+        # 标记第一个箱体
+        non_overlapping_markareas.append([{'xAxis': ts2idx[box1['start']], 'yAxis': box1['lo']},
+                                          {'xAxis': ts2idx[box1['end']], 'yAxis': box1['hi']}])
+        # 标记第二个箱体
+        non_overlapping_markareas.append([{'xAxis': ts2idx[box2['start']], 'yAxis': box2['lo']},
+                                          {'xAxis': ts2idx[box2['end']], 'yAxis': box2['hi']}])
 
-    # ---- 4. 标签 markPoint ----
+    # ---- 4. 笔折线 (追加为第二个 series) ----·
+    # line_series = {
+    #     'type': 'line',
+    #     'name': 'Bi',
+    #     'data': [[idx, price] for idx, price in pivots],
+    #     'symbol': 'none',
+    #     'lineStyle': {'color': '#ab47bc', 'width': 2},
+    #     'encode': {'x': 0, 'y': 1},
+    #     'tooltip': {'show': False},
+    # }
+
+    # ---- 5. 标签 markPoint ----
     mp_data = []
     if labels_pts:
         for idx, price, lab in labels_pts:
@@ -220,10 +247,10 @@ def echarts_boxes(df: pd.DataFrame, boxes: List[Dict], pivots, labels_pts=None, 
                 'symbol': 'triangle',
                 'symbolRotate': 0 if lab==1 else 180,
                 'symbolSize': 10,
-                'itemStyle': {'color': '#00e676' if lab==1 else '#ff1744'}
+                'itemStyle': {'color': "#e6000c" if lab==1 else '#ff1744'}
             })
 
-    # ---- 5. 组合成图表 ----
+    # ---- 6. 组合成图表 ----
     chart = (
         Kline()
         .add_xaxis(dates)
@@ -236,36 +263,51 @@ def echarts_boxes(df: pd.DataFrame, boxes: List[Dict], pivots, labels_pts=None, 
         )
     )
 
-    # 注入箱体
-    chart.options['series'][0]['markArea'] = {
+    # 添加普通箱体
+    chart.options['series'][0]['markArea'] ={ 
         'silent': True,
         'itemStyle': {'color':'rgba(52,152,219,0.12)'},
-        'data': markareas
+        'data': non_overlapping_markareas
+    
     }
+    # chart.options['series'][0]['markArea']['data'].extend([{
+    #     'silent': True,
+    #     'itemStyle': {'color': 'rgba(255,0,0,0.3)'}  # 红色背景
+    # }] + non_overlapping_markareas)  # 合并两者，确保红色箱体与蓝色箱体在同一个数据结构中
+
+    # chart.options['series'][0]['markArea'] = {
+    #     'silent': True,
+    #     'itemStyle': {'color':'rgba(0,0,0,0.1)'},
+    #     'data': non_overlapping_markareas
+    # }
+    # 添加没有重叠的箱体标记为红色
+    # chart.options['series'][0]['markArea']['data'].extend(non_overlapping_markareas)
+
     # 注入马点（买卖信号）
     if mp_data:
         chart.options['series'][0]['markPoint'] = {'data': mp_data}
 
     # 追加笔折线 series
-    chart.options['series'].append(line_series)
+    # chart.options['series'].append(line_series)
 
     chart.render(filename)
     print(f'📈 图表 → {filename}')
 
+
 # ============================= main =============================
 if __name__ == '__main__':
     # 1️⃣ 下载数据
-    df = download_gateio_futures(limit=1000)
+    df = download_gateio_futures(limit=100000)
 
     # 2️⃣ 箱体 + 缠论笔
     boxes  = detect_boxes(df)
     pivots = detect_bi_strokes(df)
 
     # 3️⃣ 生成标签点（买 = 绿三角↑，卖 = 红三角↓）
-    label_pts = build_label_points(df)
+    # label_pts = build_label_points(df)
 
     # 4️⃣ 绘图：箱体 + 笔 + 标签
-    echarts_boxes(df, boxes, pivots, label_pts)
+    echarts_boxes(df, boxes, pivots,None)
 
     # 5️⃣ LSTM 训练 + 推理（演示 3 轮即可）
     model = train_model(df, epochs=3)
